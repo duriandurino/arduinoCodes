@@ -24,7 +24,6 @@ void setup()   {
 
   Serial.println("Start");
  
-  WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
   Serial.println("Setup done");
