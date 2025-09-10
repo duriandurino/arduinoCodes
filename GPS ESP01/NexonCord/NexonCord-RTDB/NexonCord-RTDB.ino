@@ -66,6 +66,10 @@ int switchIndexFromPath(const String& dataPath) {
   return dataPath.substring(s, e).toInt();
 }
 
+String wifiCredentialPath(const char* key) {
+  return "wifi-credential/" + String(key);
+}
+
 // ====== Forward decls ======
 void startAPMode();
 void handleRoot();
@@ -78,6 +82,7 @@ void ensureDBStructure();
 void syncRelaysFromRTDB();
 void streamCallback(FirebaseStream data);
 void streamTimeoutCallback(bool timeout);
+void switchToRTDBCredentials();
 
 // ====== Setup ======
 void setup() {
@@ -177,6 +182,9 @@ void initializeFirebase() {
     return;
   }
 
+  // Switch to RTDB credentials after initial connection
+  switchToRTDBCredentials();
+
   ensureDBStructure();
   syncRelaysFromRTDB();
 
@@ -189,6 +197,52 @@ void initializeFirebase() {
 
   firebaseInitialized = true;
   Serial.println("RTDB stream listening at: " + path);
+}
+
+void switchToRTDBCredentials() {
+  String rtdbSSID = "";
+  String rtdbPassword = "";
+
+  if (Firebase.RTDB.getString(&fbdo, wifiCredentialPath("ssid"))) {
+    rtdbSSID = fbdo.stringData();
+    Serial.println("RTDB SSID retrieved: " + rtdbSSID);
+  } else {
+    Serial.println("Failed to get RTDB SSID: " + fbdo.errorReason());
+  }
+
+  if (Firebase.RTDB.getString(&fbdo, wifiCredentialPath("password"))) {
+    rtdbPassword = fbdo.stringData();
+    Serial.println("RTDB Password retrieved: " + rtdbPassword);
+  } else {
+    Serial.println("Failed to get RTDB Password: " + fbdo.errorReason());
+  }
+
+  if (!rtdbSSID.isEmpty() && !rtdbPassword.isEmpty() && (rtdbSSID != wifiSSID || rtdbPassword != wifiPassword)) {
+    Serial.println("Switching to RTDB credentials...");
+    wifiSSID = rtdbSSID;
+    wifiPassword = rtdbPassword;
+    preferences.putString("ssid", wifiSSID);
+    preferences.putString("password", wifiPassword);
+
+    WiFi.disconnect();
+    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+      delay(250);
+      Serial.print(".");
+      attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("Switched to %s, IP: %s\n", wifiSSID.c_str(), WiFi.localIP().toString().c_str());
+    } else {
+      Serial.println("Failed to switch to RTDB credentials, reverting...");
+      WiFi.begin(preferences.getString("ssid", "").c_str(), preferences.getString("password", "").c_str());
+    }
+  } else {
+    Serial.println("No valid or different RTDB credentials to switch.");
+  }
 }
 
 // ====== RTDB helpers ======
@@ -279,12 +333,22 @@ void handleRoot() {
 
   html += "<p>Device ID: <code>" + deviceID + "</code></p>";
   html += "<form action=\"/config\" method=\"POST\">";
-  html += "WiFi SSID: <input name=\"ssid\" value=\"" + wifiSSID + "\"><br>";
+  html += "WiFi SSID: <select name=\"ssid\">";
+  html += "<option value=\"\">-- Scan for Networks --</option>";
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < n; ++i) {
+    String ssid = WiFi.SSID(i);
+    ssid.replace("\"", "\\\"");
+    html += "<option value=\"" + ssid + "\"" + (ssid == wifiSSID ? " selected" : "") + ">" + ssid + "</option>";
+  }
+  html += "</select><br>";
   html += "WiFi Password: <input type=\"password\" name=\"password\"><br>";
   html += "Firebase Email: <input name=\"fb_email\" value=\"" + fbEmail + "\"><br>";
   html += "Firebase Password: <input type=\"password\" name=\"fb_password\"><br>";
   html += "<input type=\"submit\" value=\"Save & Connect\"></form>";
+  html += "<p><a href=\"/scan\">Refresh WiFi List</a></p>";
   server.send(200, "text/html", html);
+  WiFi.scanDelete();
 }
 
 void handleConfig() {
@@ -304,23 +368,7 @@ void handleConfig() {
 }
 
 void handleToggle() {
-  int sw = -1;
-  if (server.hasArg("switch")) sw = server.arg("switch").toInt();
-  if (sw >= 1 && sw <= NUM_SWITCHES) {
-    bool newState = !relayIsOn(sw);
-    if (!isAPMode && WiFi.status() == WL_CONNECTED && Firebase.ready()) {
-      String p = switchPath(sw);
-      if (!Firebase.RTDB.setBool(&fbdo, p.c_str(), newState)) {
-        Serial.printf("RTDB set failed for %s: %s\n", p.c_str(), fbdo.errorReason().c_str());
-        setRelay(sw, newState);
-      } else {
-        setRelay(sw, newState);
-      }
-    } else {
-      setRelay(sw, newState);
-    }
-    Serial.printf("Manual toggle switch %d -> %s\n", sw, newState ? "ON" : "OFF");
-  }
+  // Deprecated - No longer needed since Firebase works
   server.sendHeader("Location", "/");
   server.send(303);
 }
